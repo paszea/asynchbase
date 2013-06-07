@@ -48,6 +48,7 @@ import org.jboss.netty.channel.Channels;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.handler.codec.replay.ReplayingDecoder;
 import org.jboss.netty.handler.codec.replay.VoidEnum;
+import org.jboss.netty.handler.timeout.ReadTimeoutException;
 import org.jboss.netty.util.Timeout;
 import org.jboss.netty.util.TimerTask;
 
@@ -1016,7 +1017,13 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
     final Throwable e = event.getCause();
     final Channel c = event.getChannel();
 
-    if (e instanceof RejectedExecutionException) {
+    if (e instanceof ReadTimeoutException) {
+      // TODO: only clean up rpcs issued before timeout.
+      if (rpcs_inflight.size() == 0) {
+        return;
+      }
+      LOG.error("ReadTimeout with pending RPCs. Clean them all.", e);
+    } else if (e instanceof RejectedExecutionException) {
       LOG.warn("RPC rejected by the executor,"
                + " ignore this if we're shutting down", e);
     } else {

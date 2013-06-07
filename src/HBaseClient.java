@@ -59,6 +59,7 @@ import org.jboss.netty.channel.socket.ClientSocketChannelFactory;
 import org.jboss.netty.channel.socket.SocketChannel;
 import org.jboss.netty.channel.socket.SocketChannelConfig;
 import org.jboss.netty.channel.socket.nio.NioClientSocketChannelFactory;
+import org.jboss.netty.handler.timeout.ReadTimeoutHandler;
 import org.jboss.netty.util.HashedWheelTimer;
 import org.jboss.netty.util.Timeout;
 import org.jboss.netty.util.Timer;
@@ -2407,6 +2408,7 @@ public final class HBaseClient {
      */
     RegionClient init() {
       final RegionClient client = new RegionClient(HBaseClient.this);
+      super.addLast("readtimeout", new ReadTimeoutHandler(timer, 5));
       super.addLast("handler", client);
       return client;
     }
