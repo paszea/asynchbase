@@ -1018,11 +1018,20 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
     final Channel c = event.getChannel();
 
     if (e instanceof ReadTimeoutException) {
-      // TODO: only clean up rpcs issued before timeout.
       if (rpcs_inflight.size() == 0) {
         return;
       }
-      LOG.error("ReadTimeout with pending RPCs. Clean them all.", e);
+      // There is no activity on the channel for timeout seconds.
+      // And there are RPCs in flight to the regionserver.
+      // It typically means the regionserver or the network is in
+      // trouble. We'll proceed to close the channel.
+      // NOTE: this is a small chance that the channel is
+      // idle for a while and a RPC arrives right before the
+      // timeout and doesn't complete before the timeout. In this case
+      // the rpc will error out. It's nice to fix this but the
+      // odds is small and clients can easily workaround by retry, which
+      // they should do anyways if they care about the data.
+      LOG.error("ReadTimeout with inflight RPCs. Shut down.", e);
     } else if (e instanceof RejectedExecutionException) {
       LOG.warn("RPC rejected by the executor,"
                + " ignore this if we're shutting down", e);
