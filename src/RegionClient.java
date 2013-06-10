@@ -34,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import org.jboss.netty.buffer.ChannelBuffer;
@@ -176,12 +177,28 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
    */
   private final AtomicInteger rpcid = new AtomicInteger(-1);
 
+  /**
+   * Timestamp (milliseconds) of last read from the channel.
+   * It's used to track whether to send a ping to the server to detect
+   * an unresponsive dead regionserver.
+   */
+  private final AtomicLong last_read_ts = new AtomicLong();
+
   private final TimerTask flush_timer = new TimerTask() {
     public void run(final Timeout timeout) {
       periodicFlush();
     }
     public String toString() {
       return "flush commits of " + RegionClient.this;
+    }
+  };
+
+  private final TimerTask ping_timer = new TimerTask() {
+    public void run(final Timeout timeout) {
+      periodicPing();
+    }
+    public String toString() {
+      return "ping " + RegionClient.this;
     }
   };
 
@@ -224,6 +241,25 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
     return !dead;
   }
 
+  private int randomizeInterval(short interval) {
+    // Since we often connect to many regions at the same time, we should
+    // try to stagger the flushes to avoid flushing too many different
+    // RegionClient concurrently.
+    // To this end, we "randomly" adjust the time interval using the
+    // system's time.  nanoTime uses the machine's most precise clock, but
+    // often nanoseconds (the lowest bits) aren't available.  Most modern
+    // machines will return microseconds so we can cheaply extract some
+    // random adjustment from that.
+    short adj = (short) (System.nanoTime() & 0xF0);
+    if (interval < 3 * adj) {  // Is `adj' too large compared to `interval'?
+      adj >>>= 2;  // Reduce the adjustment to not be too far off `interval'.
+    }
+    if ((adj & 0x10) == 0x10) {  // if some arbitrary bit is set...
+      adj = (short) -adj;        // ... use a negative adjustment instead.
+    }
+    return interval + adj;
+  }
+
   /** Periodically flushes buffered RPCs.  */
   private void periodicFlush() {
     if (chan != null || dead) {
@@ -249,22 +285,39 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
   private void scheduleNextPeriodicFlush() {
     final short interval = hbase_client.getFlushInterval();
     if (interval > 0) {
-      // Since we often connect to many regions at the same time, we should
-      // try to stagger the flushes to avoid flushing too many different
-      // RegionClient concurrently.
-      // To this end, we "randomly" adjust the time interval using the
-      // system's time.  nanoTime uses the machine's most precise clock, but
-      // often nanoseconds (the lowest bits) aren't available.  Most modern
-      // machines will return microseconds so we can cheaply extract some
-      // random adjustment from that.
-      short adj = (short) (System.nanoTime() & 0xF0);
-      if (interval < 3 * adj) {  // Is `adj' too large compared to `interval'?
-        adj >>>= 2;  // Reduce the adjustment to not be too far off `interval'.
+      hbase_client.newTimeout(flush_timer, randomizeInterval(interval));
+    }
+  }
+
+  /** Periodically ping region server.  */
+  private void periodicPing() {
+    if (chan != null && !dead) {
+      // randomizeInterval() can cut off up to 1/3 of original interval.
+      final short min_interval =
+          (short) (hbase_client.getPingIntervalMs() * 2 / 3);
+
+      if (System.currentTimeMillis() - last_read_ts.get() > min_interval) {
+        // It's time to ping.
+        GetProtocolVersionRequest rpc = new GetProtocolVersionRequest();
+        rpc.getDeferred().addBoth(new Callback<Object, Object>() {
+            public Object call(final Object response) {
+              // TODO: we might consider to check response to see if the server
+              // is healthy. For now, receiving a response is considered good
+              // enough.
+              return null;
+            }
+        });
+        sendRpc(rpc);
       }
-      if ((adj & 0x10) == 0x10) {  // if some arbitrary bit is set...
-        adj = (short) -adj;        // ... use a negative adjustment instead.
-      }
-      hbase_client.newTimeout(flush_timer, interval + adj);
+    }
+    scheduleNextPeriodicPing();
+  }
+
+  /** Schedules the next periodic ping.  */
+  private void scheduleNextPeriodicPing() {
+    final short interval = hbase_client.getPingIntervalMs();
+    if (interval > 0) {
+      hbase_client.newTimeout(ping_timer, randomizeInterval(interval));
     }
   }
 
@@ -524,6 +577,7 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
       // RPCs, as we're now ready to communicate with the server.
       RegionClient.this.chan = this.chan;  // Volatile write.
       sendQueuedRpcs();
+      scheduleNextPeriodicPing();
       return version;
     }
 
@@ -1018,20 +1072,11 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
     final Channel c = event.getChannel();
 
     if (e instanceof ReadTimeoutException) {
-      if (rpcs_inflight.size() == 0) {
-        return;
-      }
-      // There is no activity on the channel for timeout seconds.
-      // And there are RPCs in flight to the regionserver.
-      // It typically means the regionserver or the network is in
-      // trouble. We'll proceed to close the channel.
-      // NOTE: this is a small chance that the channel is
-      // idle for a while and a RPC arrives right before the
-      // timeout and doesn't complete before the timeout. In this case
-      // the rpc will error out. It's nice to fix this but the
-      // odds is small and clients can easily workaround by retry, which
-      // they should do anyways if they care about the data.
-      LOG.error("ReadTimeout with inflight RPCs. Shut down.", e);
+      // There is no activity on the channel to reach the timeout.
+      // It means the regionserver or the network is in trouble since
+      // it should've at least responded to our periodic pings.
+      // We'll proceed to close the channel.
+      LOG.error("ReadTimeout. Shut down the channel.", e);
     } else if (e instanceof RejectedExecutionException) {
       LOG.warn("RPC rejected by the executor,"
                + " ignore this if we're shutting down", e);
@@ -1170,6 +1215,7 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
     final int rpcid = buf.readInt();
     final Object decoded = deserialize(buf, rpcid);
     final HBaseRpc rpc = rpcs_inflight.remove(rpcid);
+    last_read_ts.set(System.currentTimeMillis());
     if (LOG.isDebugEnabled()) {
       LOG.debug("rpcid=" + rpcid
                 + ", response size=" + (buf.readerIndex() - rdx) + " bytes"
@@ -1587,5 +1633,4 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
     rpc.getDeferred().addBoth(new ProtocolVersionCB(chan));
     Channels.write(chan, ChannelBuffers.wrappedBuffer(header, encode(rpc)));
   }
-
 }
