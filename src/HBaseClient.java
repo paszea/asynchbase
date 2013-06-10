@@ -2479,9 +2479,11 @@ public final class HBaseClient {
      */
     RegionClient init() {
       final RegionClient client = new RegionClient(HBaseClient.this);
-      super.addLast("readtimeout",
-                    new ReadTimeoutHandler(
-                        timer, getReadTimeoutMs(), MILLISECONDS));
+      if (read_timeout_ms > 0) {
+        super.addLast(
+            "readtimeout",
+            new ReadTimeoutHandler(timer, read_timeout_ms, MILLISECONDS));
+      }
       super.addLast("handler", client);
       return client;
     }
