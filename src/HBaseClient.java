@@ -368,7 +368,7 @@ public final class HBaseClient {
    * regionserver as dead and close it.
    *
    * We periodically ping regionservers and if there is no response from a server
-   * for a more than this time we think the server is unhealthy, and close its channel
+   * for more than this time we think the server is unhealthy, and close its channel
    * and fail all its pending rpcs.
    * Also @see #ping_interval_ms
    */
@@ -699,8 +699,8 @@ public final class HBaseClient {
    * Sets the interval (in milliseconds) we send pings to regionservers
    * to monitor its health.
    * 
-   * If the value is greater than #read_timeout_ms, read_timeout_ms will
-   * be used.
+   * If the value is greater than #read_timeout_ms, read_timeout_ms (minus
+   * a grace period (100ms)) will be used.
    *
    * Setting it to 0 will disable the ping. Then health-checking will rely
    * on the normal read activities on the channel. Idle channels will be

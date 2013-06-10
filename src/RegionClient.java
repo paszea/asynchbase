@@ -179,8 +179,7 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
 
   /**
    * Timestamp (milliseconds) of last read from the channel.
-   * It's used to track whether to send a ping to the server to detect
-   * an unresponsive dead regionserver.
+   * It's used to track whether to send a ping to the server.
    */
   private final AtomicLong last_read_ts = new AtomicLong();
 
