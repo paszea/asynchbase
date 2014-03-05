@@ -43,8 +43,6 @@ asynchbase_SOURCES := \
 	src/AtomicIncrementRequest.java	\
 	src/BatchableRpc.java	\
 	src/BatchGet.java	\
-	src/BatchGetTest.java	\
-	src/BatchGetLoadTst.java	\
 	src/BrokenMetaException.java	\
 	src/BufferedIncrement.java	\
 	src/Bytes.java	\
@@ -154,12 +152,6 @@ cli:
 
 integration:
 	$(MAKE) run CLASS=TestIntegration
-
-batchgettest:
-	$(JAVA) -ea -esa $(JVM_ARGS) -cp "$(get_runtime_dep_classpath):$(top_builddir)" org.hbase.async.BatchGetTest
-
-batchgetloadtest:
-	$(JAVA) -ea -esa $(JVM_ARGS) -cp "$(get_runtime_dep_classpath):$(top_builddir):." org.hbase.async.BatchGetLoadTst
 
 # Little sed script to make a pretty-ish banner.
 BANNER := sed 's/^.*/  &  /;h;s/./=/g;p;x;p;x'
