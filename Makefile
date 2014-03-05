@@ -37,11 +37,12 @@ spec_title := Asynchronous HBase Client
 spec_vendor := The Async HBase Authors
 # Semantic Versioning (see http://semver.org/).
 # spec_version := 1.5.0-SNAPSHOT
-spec_version := 1.4.1.3
+spec_version := 1.4.1.5
 jar := $(top_builddir)/asynchbase-$(spec_version).jar
 asynchbase_SOURCES := \
 	src/AtomicIncrementRequest.java	\
 	src/BatchableRpc.java	\
+	src/BatchGet.java	\
 	src/BrokenMetaException.java	\
 	src/BufferedIncrement.java	\
 	src/Bytes.java	\
