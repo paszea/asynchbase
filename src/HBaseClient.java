@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -1027,6 +1028,85 @@ public final class HBaseClient {
   public Deferred<ArrayList<KeyValue>> get(final GetRequest request) {
     num_gets.increment();
     return sendRpcToRegion(request).addCallbacks(got, Callback.PASSTHROUGH);
+  }
+
+  public Deferred<List<ArrayList<KeyValue>>> get(final List<GetRequest> requests) {
+    class ResultAggregator implements Callback<List<ArrayList<KeyValue>>, ArrayList<Object>> {
+      int size;
+      ResultAggregator(int size) {
+        this.size = size;
+      }
+      public List<ArrayList<KeyValue>> call(ArrayList<Object> r) throws Exception {
+        @SuppressWarnings("unchecked")
+        ArrayList<KeyValue>[] results = (ArrayList<KeyValue>[])new ArrayList<?>[size];
+        for (Object o : r) {
+          BatchGet.ActionResp[] entries = (BatchGet.ActionResp[]) o;
+          for (int i=0; i < entries.length; i++) {
+             BatchGet.ActionResp entry = entries[i];
+             if (entry.result instanceof ArrayList) {
+               @SuppressWarnings("unchecked")
+               ArrayList<KeyValue> result = (ArrayList<KeyValue>)entry.result;
+               results[entry.order] = result;
+             } else if (entry.result instanceof Exception) {
+               throw (Exception)entry.result;
+             } else {
+               throw new InvalidResponseException(ArrayList.class, entry.result);
+             }
+          }
+        }
+        return Arrays.asList(results);
+      }
+    }
+
+    class RetryGet implements Callback<Deferred<List<ArrayList<KeyValue>>>, ArrayList<Object>> {
+      public Deferred<List<ArrayList<KeyValue>>> call(final ArrayList<Object> args) {
+        return get(requests);
+      }
+    }
+
+    Map<RegionClient, BatchGet> regionBatchGets = new HashMap<RegionClient, BatchGet>();
+    ArrayList<Deferred<Object>> locateRegionDeferreds = new ArrayList<Deferred<Object>>();
+    // Split gets according to regions.
+    for (int i=0; i<requests.size(); i++) {
+      final GetRequest request = requests.get(i);
+      final byte[] table = request.table;
+      final byte[] key = request.key;
+      final RegionInfo region = getRegion(table, key);
+      if (region == null) {
+        locateRegionDeferreds.add(locateRegion(table, key));
+      }
+      if (locateRegionDeferreds.size() > 0) {
+        continue;
+      }
+
+      final RegionClient client = (Bytes.equals(region.table(), ROOT)
+                                   ? rootregion : region2client.get(region));
+      request.setRegion(region);
+      BatchGet batchGet = regionBatchGets.get(client);
+      if (batchGet == null) {
+        // TODO: pass in server version
+        batchGet = new BatchGet();
+        regionBatchGets.put(client, batchGet);
+      }
+      batchGet.add(new BatchGet.ActionEntry(request, i));
+    }
+    if (locateRegionDeferreds.size() > 0) {
+      // We need to locate some regions. Will re-issue the RPC once we found them.
+      return Deferred.group(locateRegionDeferreds).addCallbackDeferring(new RetryGet());
+    }
+
+    ArrayList<Deferred<Object>> deferredResults = new ArrayList<Deferred<Object>>(
+            regionBatchGets.size());
+
+    for (Map.Entry<RegionClient, BatchGet> entry : regionBatchGets.entrySet()) {
+      final BatchGet request = entry.getValue();
+      final Deferred<Object> d = request.getDeferred();
+      entry.getKey().sendRpc(request);
+      deferredResults.add(d);
+    }
+
+    return Deferred.group(deferredResults).addCallback(
+        new ResultAggregator(requests.size()));
   }
 
   /** Singleton callback to handle responses of "get" RPCs.  */
