@@ -39,7 +39,7 @@ import org.jboss.netty.buffer.ChannelBuffer;
  * This RPC is guaranteed to be sent atomically (but HBase doesn't guarantee
  * that it will apply it atomically).
  */
-final class MultiAction extends HBaseRpc implements HBaseRpc.IsEdit {
+class MultiAction extends HBaseRpc implements HBaseRpc.IsEdit {
 
   // NOTE: I apologize for the long methods and complex control flow logic,
   // with many nested loops and `if's.  `multiPut' and `multi' have always
@@ -63,7 +63,7 @@ final class MultiAction extends HBaseRpc implements HBaseRpc.IsEdit {
   };
 
   /** Template for NSREs.  */
-  private static final NotServingRegionException NSRE =
+  static final NotServingRegionException NSRE =
     new NotServingRegionException("Region unavailable", null);
 
   /**
@@ -662,6 +662,6 @@ final class MultiAction extends HBaseRpc implements HBaseRpc.IsEdit {
 
   }
 
-  private static final MultiActionSuccess SUCCESS = new MultiActionSuccess();
+  static final MultiActionSuccess SUCCESS = new MultiActionSuccess();
 
 }

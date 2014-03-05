@@ -1348,6 +1348,8 @@ final class RegionClient extends ReplayingDecoder<VoidEnum> {
         // Fall through
       case 67:  // MultiResponse
         // Don't read the type again, responseFromBuffer() will need it.
+        if (request instanceof BatchGet)
+            return ((BatchGet) request).decodeMultiResponse(buf);
         return ((MultiAction) request).responseFromBuffer(buf);
     }
     throw new NonRecoverableException("Couldn't de-serialize "

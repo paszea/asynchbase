@@ -546,5 +546,4 @@ public final class PutRequest extends BatchableRpc
     buf.writeInt(payloadSize());  // Size of the KV that follows.
     serializePayload(buf);
   }
-
 }

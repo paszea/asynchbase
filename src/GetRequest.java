@@ -256,6 +256,11 @@ public final class GetRequest extends HBaseRpc
 
     size += 1;  // byte: Type of the 2nd parameter.
     size += 1;  // byte: Type again (see HBASE-2877).
+    return size + predictPayloadSize(server_version);
+  }
+
+  int predictPayloadSize(final byte server_version) {
+    int size = 0;
     size += 1;  // byte: Version of Get.
     size += 3;  // vint: row key length (3 bytes => max length = 32768).
     size += key.length;  // The row key.
@@ -299,6 +304,13 @@ public final class GetRequest extends HBaseRpc
     // 2nd param: Get object
     buf.writeByte(32);   // Code for a `Get' parameter.
     buf.writeByte(32);   // Code again (see HBASE-2877).
+
+    serializePayloadInto(server_version, buf);
+    return buf;
+  }
+
+  /** Serialize the raw underlying `Put' into the given buffer.  */
+  void serializePayloadInto(final byte server_version, final ChannelBuffer buf) {
     buf.writeByte(1);    // Get#GET_VERSION.  Undocumented versioning of Get.
     writeByteArray(buf, key);
     buf.writeLong(lockid);  // Lock ID.
@@ -338,7 +350,5 @@ public final class GetRequest extends HBaseRpc
     if (server_version >= RegionClient.SERVER_VERSION_092_OR_ABOVE) {
       buf.writeInt(0);  // Attributes map: number of elements.
     }
-    return buf;
   }
-
 }
