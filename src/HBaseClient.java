@@ -34,6 +34,7 @@ import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -1033,10 +1034,14 @@ public final class HBaseClient {
   public Deferred<List<ArrayList<KeyValue>>> get(final List<GetRequest> requests) {
     class ResultAggregator implements Callback<List<ArrayList<KeyValue>>, ArrayList<Object>> {
       int size;
+      HashSet<RegionInfo> nsreRegions;
+
       ResultAggregator(int size) {
         this.size = size;
+        this.nsreRegions = new HashSet<RegionInfo>();
       }
       public List<ArrayList<KeyValue>> call(ArrayList<Object> r) throws Exception {
+        Exception e = null;
         @SuppressWarnings("unchecked")
         ArrayList<KeyValue>[] results = (ArrayList<KeyValue>[])new ArrayList<?>[size];
         for (Object o : r) {
@@ -1048,11 +1053,21 @@ public final class HBaseClient {
                ArrayList<KeyValue> result = (ArrayList<KeyValue>)entry.result;
                results[entry.order] = result;
              } else if (entry.result instanceof Exception) {
-               throw (Exception)entry.result;
+               if (entry.result instanceof NotServingRegionException) {
+                 RegionInfo region = requests.get(entry.order).getRegion();
+                 if (!nsreRegions.contains(region)) {
+                   invalidateRegionCache(region.name(), true, null);
+                   nsreRegions.add(region);
+                 }
+               }
+               e = (Exception)entry.result;
              } else {
-               throw new InvalidResponseException(ArrayList.class, entry.result);
+               e = new InvalidResponseException(ArrayList.class, entry.result);
              }
           }
+        }
+        if (e != null) {
+          throw e;
         }
         return Arrays.asList(results);
       }
@@ -1075,16 +1090,19 @@ public final class HBaseClient {
       if (region == null) {
         locateRegionDeferreds.add(locateRegion(table, key));
       }
+      final RegionClient client = (Bytes.equals(region.table(), ROOT)
+                                   ? rootregion : region2client.get(region));
+      if (client == null || !client.isAlive()) {
+        locateRegionDeferreds.add(locateRegion(table, key));
+      }
+
       if (locateRegionDeferreds.size() > 0) {
         continue;
       }
 
-      final RegionClient client = (Bytes.equals(region.table(), ROOT)
-                                   ? rootregion : region2client.get(region));
       request.setRegion(region);
       BatchGet batchGet = regionBatchGets.get(client);
       if (batchGet == null) {
-        // TODO: pass in server version
         batchGet = new BatchGet();
         regionBatchGets.put(client, batchGet);
       }
