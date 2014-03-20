@@ -1032,18 +1032,25 @@ public final class HBaseClient {
   }
 
   public Deferred<List<ArrayList<KeyValue>>> get(final List<GetRequest> requests) {
-    class ResultAggregator implements Callback<List<ArrayList<KeyValue>>, ArrayList<Object>> {
+    return get(requests, 1);
+  }
+
+  private Deferred<List<ArrayList<KeyValue>>> get(
+          final List<GetRequest> requests, final int attempt) {
+    class ResultAggregator implements Callback<Deferred<List<ArrayList<KeyValue>>>, ArrayList<Object>> {
       int size;
-      HashSet<RegionInfo> nsreRegions;
 
       ResultAggregator(int size) {
         this.size = size;
-        this.nsreRegions = new HashSet<RegionInfo>();
       }
-      public List<ArrayList<KeyValue>> call(ArrayList<Object> r) throws Exception {
-        Exception e = null;
+      public Deferred<List<ArrayList<KeyValue>>> call(ArrayList<Object> r) throws Exception {
+        final ArrayList<GetRequest> nsreGets = new ArrayList<GetRequest>();
+        final ArrayList<Integer> reqOrders = new ArrayList<Integer>();
+        final ArrayList<byte[]> regionNames = new ArrayList<byte[]>();
+        final ArrayList<NotServingRegionException> nsres = new ArrayList<NotServingRegionException>();
+
         @SuppressWarnings("unchecked")
-        ArrayList<KeyValue>[] results = (ArrayList<KeyValue>[])new ArrayList<?>[size];
+        final ArrayList<KeyValue>[] results = (ArrayList<KeyValue>[])new ArrayList<?>[size];
         for (Object o : r) {
           BatchGet.ActionResp[] entries = (BatchGet.ActionResp[]) o;
           for (int i=0; i < entries.length; i++) {
@@ -1054,30 +1061,36 @@ public final class HBaseClient {
                results[entry.order] = result;
              } else if (entry.result instanceof Exception) {
                if (entry.result instanceof NotServingRegionException) {
-                 RegionInfo region = requests.get(entry.order).getRegion();
-                 if (!nsreRegions.contains(region)) {
-                   invalidateRegionCache(region.name(), true, null);
-                   nsreRegions.add(region);
-                 }
+                 // We send out NSRE's gets one by one in case they fall on different regions
+                 // after the region becomes available, say, after a split.
+                 GetRequest req = requests.get(entry.order);
+                 nsreGets.add(req);
+                 reqOrders.add(entry.order);
+                 regionNames.add(req.getRegion().name());
+                 nsres.add((NotServingRegionException)entry.result);
+               } else {
+                 throw (Exception)entry.result;
                }
-               e = (Exception)entry.result;
              } else {
-               e = new InvalidResponseException(ArrayList.class, entry.result);
+               throw new InvalidResponseException(ArrayList.class, entry.result);
              }
           }
         }
-        if (e != null) {
-          throw e;
+        if (nsreGets.size() > 0) {
+          return batchGetHandleNSRE(nsreGets, reqOrders, regionNames, nsres, results);
         }
-        return Arrays.asList(results);
+        return Deferred.fromResult(Arrays.asList(results));
       }
     }
 
     class RetryGet implements Callback<Deferred<List<ArrayList<KeyValue>>>, ArrayList<Object>> {
       public Deferred<List<ArrayList<KeyValue>>> call(final ArrayList<Object> args) {
-        return get(requests);
+        return get(requests, attempt + 1);
       }
     }
+
+    if (attempt > 10)
+        return Deferred.fromError(new NonRecoverableException("Too many get attempts"));
 
     Map<RegionClient, BatchGet> regionBatchGets = new HashMap<RegionClient, BatchGet>();
     ArrayList<Deferred<Object>> locateRegionDeferreds = new ArrayList<Deferred<Object>>();
@@ -1087,11 +1100,12 @@ public final class HBaseClient {
       final byte[] table = request.table;
       final byte[] key = request.key;
       final RegionInfo region = getRegion(table, key);
-      if (region == null) {
-        locateRegionDeferreds.add(locateRegion(table, key));
+      RegionClient client = null;
+      if (region != null) {
+        client = (Bytes.equals(region.table(), ROOT)
+                  ? rootregion : region2client.get(region));
       }
-      final RegionClient client = (Bytes.equals(region.table(), ROOT)
-                                   ? rootregion : region2client.get(region));
+
       if (client == null || !client.isAlive()) {
         locateRegionDeferreds.add(locateRegion(table, key));
       }
@@ -1123,8 +1137,42 @@ public final class HBaseClient {
       deferredResults.add(d);
     }
 
-    return Deferred.group(deferredResults).addCallback(
-        new ResultAggregator(requests.size()));
+    return Deferred.groupInOrder(deferredResults).addCallbackDeferring(
+      new ResultAggregator(requests.size()));
+  }
+
+  private Deferred<List<ArrayList<KeyValue>>> batchGetHandleNSRE(
+      final List<GetRequest> nsreGets,
+      final List<Integer> orders,
+      final List<byte[]> regionNames,
+      final List<NotServingRegionException> nsres,
+      final ArrayList<KeyValue>[] results) {
+    class ResultCollector implements Callback<List<ArrayList<KeyValue>>, ArrayList<Object>> {
+      public List<ArrayList<KeyValue>> call(ArrayList<Object> r) throws Exception {
+        for (int i=0; i<r.size(); i++) {
+          Object o = r.get(i);
+          if (o instanceof ArrayList) {
+            @SuppressWarnings("unchecked")
+            ArrayList<KeyValue> result = (ArrayList<KeyValue>)o;
+            int order = orders.get(i);
+            results[order] = result;
+          } else {
+            throw new InvalidResponseException(ArrayList.class, o);
+          }
+        }
+        return Arrays.asList(results);
+      }
+    }
+
+    ArrayList<Deferred<Object>> deferreds = new ArrayList<Deferred<Object>>(nsreGets.size());
+    for (int i=0; i<nsreGets.size(); i++) {
+      GetRequest getReq = nsreGets.get(i);
+      Deferred<Object> d = getReq.getDeferred();
+      deferreds.add(d);
+      handleNSRE(getReq, regionNames.get(i), nsres.get(i));
+    }
+
+    return Deferred.groupInOrder(deferreds).addCallback(new ResultCollector());
   }
 
   /** Singleton callback to handle responses of "get" RPCs.  */
