@@ -1060,7 +1060,7 @@ public final class HBaseClient {
                results[entry.order] = result;
              } else if (entry.result instanceof Exception) {
                if (entry.result instanceof NotServingRegionException) {
-                 // We send out NSRE's gets one by one in case they fall on different regions
+                 // We send out NSRE gets one by one in case they fall on different regions
                  // after the region becomes available, say, after a split.
                  GetRequest req = requests.get(entry.order);
                  nsreGets.add(req);
